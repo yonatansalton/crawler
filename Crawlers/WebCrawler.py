@@ -1,7 +1,7 @@
 import threading
 import queue
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, element
 from Abstracts import Crawler
 
 class WebCrawler(threading.Thread, Crawler):
@@ -20,7 +20,6 @@ class WebCrawler(threading.Thread, Crawler):
         self.queue = dataQueue
         self.linkQ = queue.Queue()
         self.url = url
-        self.visited_url = set()
         self.concurrency = concurrency
         self.log = logger
 
@@ -29,8 +28,7 @@ class WebCrawler(threading.Thread, Crawler):
         '''
         This is the main crawl function that runs until the linkQ queue does not return anything for 5 seconds,
         meanind it's empty. until then the while loop keeps working and pop a link from the queue.
-        each link is sent to the get_document function to extract the data from it, and to the find_documents function
-        to extract more links.
+        each link is sent to the get_document function to extract the data from it
         :param tid: string. Thread number used later on when saving the data into a file
         :return: None
         '''
@@ -43,31 +41,46 @@ class WebCrawler(threading.Thread, Crawler):
                 break
 
             self.get_document(link, tid)
-            self.find_documents(link)
 
-    def get_document(self, url: str, tid: str):
+    def get_document(self, link: element.Tag, tid: str):
         '''
-        This is the get_document function. it get a url and utilizes BS to parse it's content.
-        It is then extracts the title from it and adds the url and the thread id. it puts the data into the data queue
-        That is being handler by the DataHandler Thread. the url is added to the visited_urls set.
-        :param url: string, the url needed to extract data from
+        This is the get_document function. it get a BS tag,
+        It is then extracts the title, author, publish date and content from it and adds thread id.
+        it puts the data into the data queue that is being handler by the DataHandler Thread.
+        :param link: string, the url needed to extract data from
         :param tid: thread id
         :return:
         '''
         try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, "html.parser")
-                data = {
-                    "Title": soup.find('title').text,
+            a = link.find_all('a')
+            title = a[1].text
+            author = a[2].text
+
+            index = link.find("div", class_="wpf-thread-author-name").text.rfind(',') + 1
+            date = link.find("div", class_="wpf-thread-author-name").text[index:].strip()
+            url = a[1].get("href")
+            text = ""
+
+            try:
+                response = requests.get(url, headers={"User-Agent": "XY"})
+                if response.status_code == 200:
+                    content = response.content
+                    soup = BeautifulSoup(content, "html.parser")
+                    text = soup.find("div", class_="wpforo-post-content").text
+
+            except Exception as e:
+                self.log.warning("Failed to fetch content from " + url)
+
+            data = {
+                    "Title": title,
+                    "Author": author,
+                    "Published": date,
                     "Url": url,
+                    "Content": text,
                     "Thread": tid
-                }
-                self.queue.put(data)
-                self.visited_url.add(url)
-                self.log.info("Got document from " + url)
-            else:
-                self.log.error("Got bad response from server " + response.status_code)
+                 }
+            self.queue.put(data)
+            self.log.info("Got document from " + url)
         except Exception as e:
             self.log.error(str(e))
 
@@ -78,18 +91,16 @@ class WebCrawler(threading.Thread, Crawler):
         :return:
         '''
         try:
-            response = requests.get(url)
+            response = requests.get(url, headers={"User-Agent": "XY"})
 
             if response.status_code == 200:
                 content = response.content
                 soup = BeautifulSoup(content, "html.parser")
-                links = soup.find_all("a")
+                links = soup.find_all("div", class_="wpf-thread")
                 for link in links:
-                    l = link.get("href", None)
-                    if l is not None and l not in self.visited_url:
-                            self.linkQ.put(link["href"])
+                    self.linkQ.put(link)
             else:
-                self.log.error("Got bad response from server " + response.status_code)
+                self.log.error("Got bad response from server " + str(response.status_code))
         except Exception as e:
             self.log.error(str(e))
 
